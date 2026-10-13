@@ -1,0 +1,327 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Todo App foundation stack (deployed via Git sync). Shared, slow-changing
+  resources that the application and infrastructure repos depend on: the ECR
+  repository, the private static-assets bucket, the pipeline artifact bucket,
+  the GitHub Actions CI role, and the data-layer foundations (RDS master
+  credentials secret, ElastiCache Redis AUTH token secret, and the RDS Proxy
+  role). The RDS instance, RDS Proxy and ElastiCache Redis cluster themselves
+  live in the infrastructure stack because they need its VPC. The account's
+  existing GitHub OIDC provider is reused. All values other repos need are
+  published as cross-stack Exports.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: todo-app
+    Description: Prefix used to name and tag project resources.
+  GitHubOrg:
+    Type: String
+    Description: GitHub organization or username that owns the repositories.
+  AppRepoName:
+    Type: String
+    Default: todo-app-codes
+    Description: Application repo allowed to assume the CI role via OIDC.
+  DbName:
+    Type: String
+    Default: todoapp
+    AllowedPattern: "^[a-zA-Z][a-zA-Z0-9_]{0,62}$"
+    Description: Initial database name created on the RDS instance.
+  DbUsername:
+    Type: String
+    Default: todoadmin
+    AllowedPattern: "^[a-zA-Z][a-zA-Z0-9_]{0,15}$"
+    Description: RDS master username stored in the database secret.
+
+Resources:
+  # -------------------------------------------------------------------------
+  # Container registry for the application image.
+  # Immutable tags so every commit SHA is a distinct, traceable image, which is
+  # what blue/green needs. "latest" is excluded so the workflow can move it on
+  # each main push; that push is what the pipeline tracks to start a deploy.
+  # Scans on push; keeps only the 10 most recent images.
+  # -------------------------------------------------------------------------
+  AppEcrRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub "${ProjectName}-app"
+      ImageTagMutability: IMMUTABLE_WITH_EXCLUSION
+      ImageTagMutabilityExclusionFilters:
+        - ImageTagMutabilityExclusionFilterType: WILDCARD
+          ImageTagMutabilityExclusionFilterValue: latest
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep the 10 most recent images, expire older ones.",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # -------------------------------------------------------------------------
+  # Private static-assets bucket (frontend build output). No public access at
+  # all. The bucket policy that grants read access to the CloudFront
+  # distribution lives in the infrastructure stack, because it needs the
+  # distribution ARN.
+  # -------------------------------------------------------------------------
+  AssetsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-assets-${AWS::AccountId}-${AWS::Region}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # -------------------------------------------------------------------------
+  # Pipeline artifact bucket. Versioning is required by CodePipeline. Old
+  # noncurrent versions expire after 30 days to keep it tidy.
+  # -------------------------------------------------------------------------
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-artifacts-${AWS::AccountId}-${AWS::Region}"
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-old-artifact-versions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # -------------------------------------------------------------------------
+  # CI role assumed by the application repo's GitHub Actions workflow.
+  # Scoped to: push to this ECR repo, and write build artifacts to the
+  # artifact bucket. Trust is locked to the application repo (AppRepoName).
+  # -------------------------------------------------------------------------
+  GitHubActionsCiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-ci-role"
+      Description: Assumed by GitHub Actions (app repo) via OIDC to build/push images and upload artifacts.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOrg}/${AppRepoName}:*"
+      Policies:
+        - PolicyName: ecr-push
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: EcrAuthToken
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: EcrPushPull
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                Resource: !GetAtt AppEcrRepository.Arn
+        - PolicyName: artifact-upload
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ArtifactReadWrite
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource: !Sub "${ArtifactBucket.Arn}/*"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # -------------------------------------------------------------------------
+  # Data layer foundations. Todo data lives in Amazon RDS and the app reaches
+  # it only through RDS Proxy; ElastiCache for Redis caches reads in front of
+  # it. Credentials are generated here once so they survive infrastructure
+  # stack replacements. RDS Proxy authenticates to the database with the
+  # master secret, so the secret must hold both username and password.
+  # -------------------------------------------------------------------------
+  DbMasterSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${ProjectName}/rds/master"
+      Description: RDS master credentials for the Todo App database (used by RDS Proxy).
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username": "${DbUsername}", "dbname": "${DbName}"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludeCharacters: "\"@/\\' "
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Redis AUTH token for the ElastiCache cluster (in-transit encryption is
+  # required when an AUTH token is set). Punctuation is excluded so the token
+  # meets ElastiCache's allowed-character rules.
+  RedisAuthTokenSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${ProjectName}/elasticache/auth-token"
+      Description: AUTH token for the Todo App ElastiCache Redis cluster.
+      GenerateSecretString:
+        PasswordLength: 64
+        ExcludePunctuation: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Role RDS Proxy assumes to read the master secret and open pooled
+  # connections to the database on the app's behalf.
+  RdsProxyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-rds-proxy-role"
+      Description: Assumed by RDS Proxy to read the Todo App database credentials.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: rds.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: read-db-secret
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadDbSecret
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource: !Ref DbMasterSecret
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+Outputs:
+  AppEcrRepositoryUri:
+    Description: ECR repository URI (push target for the app build).
+    Value: !GetAtt AppEcrRepository.RepositoryUri
+    Export:
+      Name: !Sub "${ProjectName}-ecr-uri"
+
+  AppEcrRepositoryArn:
+    Value: !GetAtt AppEcrRepository.Arn
+    Export:
+      Name: !Sub "${ProjectName}-ecr-arn"
+
+  AppEcrRepositoryName:
+    Value: !Ref AppEcrRepository
+    Export:
+      Name: !Sub "${ProjectName}-ecr-name"
+
+  AssetsBucketName:
+    Value: !Ref AssetsBucket
+    Export:
+      Name: !Sub "${ProjectName}-assets-bucket-name"
+
+  AssetsBucketArn:
+    Value: !GetAtt AssetsBucket.Arn
+    Export:
+      Name: !Sub "${ProjectName}-assets-bucket-arn"
+
+  AssetsBucketRegionalDomainName:
+    Description: Regional domain name, used as the CloudFront origin in the infra stack.
+    Value: !GetAtt AssetsBucket.RegionalDomainName
+    Export:
+      Name: !Sub "${ProjectName}-assets-bucket-domain"
+
+  ArtifactBucketName:
+    Value: !Ref ArtifactBucket
+    Export:
+      Name: !Sub "${ProjectName}-artifact-bucket-name"
+
+  ArtifactBucketArn:
+    Value: !GetAtt ArtifactBucket.Arn
+    Export:
+      Name: !Sub "${ProjectName}-artifact-bucket-arn"
+
+  CiRoleArn:
+    Description: Set this as a secret/variable in the app repo for the aws-actions/configure-aws-credentials step.
+    Value: !GetAtt GitHubActionsCiRole.Arn
+    Export:
+      Name: !Sub "${ProjectName}-ci-role-arn"
+
+  DbMasterSecretArn:
+    Description: RDS master credentials secret. The infra stack uses it for the RDS instance and the RDS Proxy auth config.
+    Value: !Ref DbMasterSecret
+    Export:
+      Name: !Sub "${ProjectName}-db-secret-arn"
+
+  DatabaseName:
+    Value: !Ref DbName
+    Export:
+      Name: !Sub "${ProjectName}-db-name"
+
+  DatabaseUsername:
+    Value: !Ref DbUsername
+    Export:
+      Name: !Sub "${ProjectName}-db-username"
+
+  RdsProxyRoleArn:
+    Description: Role the RDS Proxy in the infra stack assumes to read the DB secret.
+    Value: !GetAtt RdsProxyRole.Arn
+    Export:
+      Name: !Sub "${ProjectName}-rds-proxy-role-arn"
+
+  RedisAuthTokenSecretArn:
+    Description: AUTH token secret for the ElastiCache Redis cluster in the infra stack.
+    Value: !Ref RedisAuthTokenSecret
+    Export:
+      Name: !Sub "${ProjectName}-redis-auth-secret-arn"

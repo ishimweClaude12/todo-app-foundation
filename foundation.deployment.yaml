@@ -1,0 +1,13 @@
+# Git sync stack deployment file for the Todo App foundation stack.
+# Point Git sync at this file when you create the stack from repository source.
+# Git sync then watches this file and foundation.yaml for changes.
+template-file-path: foundation.yaml
+parameters:
+  ProjectName: todo-app
+  GitHubOrg: ishimweClaude12
+  AppRepoName: todo-app-codes
+  DbName: todoapp
+  DbUsername: todoadmin
+tags:
+  Project: todo-app
+  ManagedBy: cloudformation-git-sync

@@ -1,0 +1,78 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Todo App - one-time bootstrap. Creates the two things Git sync cannot
+  create for itself: the GitHub connection and the CloudFormation Git sync
+  deploy role. Deploy this ONCE per account/region with the AWS CLI. Every
+  other role in the project is created automatically by the Git sync stacks.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: todo-app
+    Description: Prefix used to name and tag project resources.
+  GitHubConnectionName:
+    Type: String
+    Default: todo-app-github
+    Description: >
+      Name of the CodeConnections connection to GitHub. After this stack
+      creates it, the connection is PENDING until you authorize it once in the
+      console (Developer Tools > Settings > Connections).
+
+Resources:
+  # Connection Git sync uses to read your GitHub repos. Comes up PENDING;
+  # authorize it once in the console before the first sync.
+  GitHubConnection:
+    Type: AWS::CodeStarConnections::Connection
+    Properties:
+      ConnectionName: !Ref GitHubConnectionName
+      ProviderType: GitHub
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # The role Git sync assumes to deploy the foundation and infrastructure
+  # stacks. Trusts BOTH the Git sync principal (to run change sets) and the
+  # CloudFormation service principal (used if a stack sets it as a service
+  # role). AdministratorAccess keeps the lab friction-free; see the README for
+  # how to scope it down for production.
+  CfnGitSyncDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-cfn-gitsync-role"
+      Description: Assumed by CloudFormation Git sync to deploy Todo App stacks.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: CfnGitSyncTrustPolicy
+            Effect: Allow
+            Principal:
+              Service: cloudformation.sync.codeconnections.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+          - Sid: CfnServiceTrustPolicy
+            Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+Outputs:
+  GitHubConnectionArn:
+    Description: >
+      ARN of the GitHub connection. Authorize it in the console before the
+      first sync, then reuse it when wiring Git sync for each repo.
+    Value: !Ref GitHubConnection
+    Export:
+      Name: !Sub "${ProjectName}-github-connection-arn"
+
+  CfnGitSyncDeployRoleArn:
+    Description: Role ARN to select when configuring Git sync for the foundation and infrastructure stacks.
+    Value: !GetAtt CfnGitSyncDeployRole.Arn
+    Export:
+      Name: !Sub "${ProjectName}-cfn-gitsync-role-arn"
