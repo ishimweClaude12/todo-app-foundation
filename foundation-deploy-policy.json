@@ -1,0 +1,100 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "FoundationIamRoles",
+            "Effect": "Allow",
+            "Action": [
+                "iam:CreateRole",
+                "iam:DeleteRole",
+                "iam:GetRole",
+                "iam:UpdateRole",
+                "iam:UpdateRoleDescription",
+                "iam:UpdateAssumeRolePolicy",
+                "iam:PutRolePolicy",
+                "iam:GetRolePolicy",
+                "iam:DeleteRolePolicy",
+                "iam:ListRolePolicies",
+                "iam:ListAttachedRolePolicies",
+                "iam:TagRole",
+                "iam:UntagRole",
+                "iam:ListRoleTags"
+            ],
+            "Resource": "arn:aws:iam::605134436600:role/todo-app/foundation/*"
+        },
+        {
+            "Sid": "FoundationEcrRepo",
+            "Effect": "Allow",
+            "Action": "ecr:*",
+            "Resource": "arn:aws:ecr:us-east-1:605134436600:repository/todo-app-app"
+        },
+        {
+            "Sid": "FoundationBuckets",
+            "Effect": "Allow",
+            "Action": "s3:*",
+            "Resource": [
+                "arn:aws:s3:::todo-app-artifacts-605134436600-us-east-1",
+                "arn:aws:s3:::todo-app-artifacts-605134436600-us-east-1/*",
+                "arn:aws:s3:::todo-app-assets-605134436600-us-east-1",
+                "arn:aws:s3:::todo-app-assets-605134436600-us-east-1/*"
+            ]
+        },
+        {
+            "Sid": "FoundationSecrets",
+            "Effect": "Allow",
+            "Action": [
+                "secretsmanager:CreateSecret",
+                "secretsmanager:DeleteSecret",
+                "secretsmanager:DescribeSecret",
+                "secretsmanager:UpdateSecret",
+                "secretsmanager:PutSecretValue",
+                "secretsmanager:TagResource",
+                "secretsmanager:UntagResource"
+            ],
+            "Resource": "arn:aws:secretsmanager:us-east-1:605134436600:secret:todo-app/*"
+        },
+        {
+            "Sid": "GenerateSecretValues",
+            "Effect": "Allow",
+            "Action": "secretsmanager:GetRandomPassword",
+            "Resource": "*"
+        },
+        {
+            "Sid": "GitSyncChangeSets",
+            "Effect": "Allow",
+            "Action": [
+                "cloudformation:CreateChangeSet",
+                "cloudformation:DeleteChangeSet",
+                "cloudformation:DescribeChangeSet",
+                "cloudformation:DescribeStackEvents",
+                "cloudformation:DescribeStacks",
+                "cloudformation:ExecuteChangeSet",
+                "cloudformation:GetTemplate",
+                "cloudformation:ListChangeSets",
+                "cloudformation:ListStacks",
+                "cloudformation:ValidateTemplate"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "GitSyncManagedRules",
+            "Effect": "Allow",
+            "Action": [
+                "events:PutRule",
+                "events:PutTargets"
+            ],
+            "Resource": "*",
+            "Condition": {
+                "StringEquals": {
+                    "events:ManagedBy": "cloudformation.sync.codeconnections.amazonaws.com"
+                }
+            }
+        },
+        {
+            "Sid": "GitSyncDescribeRule",
+            "Effect": "Allow",
+            "Action": "events:DescribeRule",
+            "Resource": "*"
+        }
+    ]
+}

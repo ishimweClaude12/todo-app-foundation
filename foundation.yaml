@@ -137,6 +137,7 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub "${ProjectName}-ci-role"
+      Path: !Sub "/${ProjectName}/foundation/"
       Description: Assumed by GitHub Actions (app repo) via OIDC to build/push images and upload artifacts.
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
@@ -226,6 +227,7 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub "${ProjectName}-rds-proxy-role"
+      Path: !Sub "/${ProjectName}/foundation/"
       Description: Assumed by RDS Proxy to read the Todo App database credentials.
       AssumeRolePolicyDocument:
         Version: "2012-10-17"

@@ -4,7 +4,7 @@ Shared, slow-changing AWS resources for the **Todo App**. Deployed with
 CloudFormation Git sync. This is the base layer every other repo builds on, and
 everything they need is published as a cross-stack Export.
 
-Region: `eu-north-1`.
+Region: `us-east-1`.
 
 ## How the three repos fit together
 
@@ -43,6 +43,7 @@ todo-app-foundation/
 ├── bootstrap.yaml                  # Run ONCE with the CLI (see step 1)
 ├── foundation.yaml                 # Deployed by Git sync
 ├── foundation.deployment.yaml      # Git sync deployment file
+├── foundation-deploy-policy.json   # Least-privilege policy for the deploy role
 └── README.md
 ```
 
@@ -64,7 +65,7 @@ aws cloudformation deploy \
   --stack-name todo-app-bootstrap \
   --template-file bootstrap.yaml \
   --capabilities CAPABILITY_NAMED_IAM \
-  --region eu-north-1
+  --region us-east-1
 ```
 
 Then authorize the connection: open **Developer Tools > Settings > Connections**
@@ -119,7 +120,8 @@ deployment file re-syncs the stack automatically.
 
 `todo-app-cfn-gitsync-role` uses `AdministratorAccess` so the lab deploys
 without you chasing missing IAM permissions template by template. For a real
-environment, replace that managed policy with one scoped to the services the
+environment, replace it with `foundation-deploy-policy.json` (covers this
+stack plus the Git sync actions), or for all stacks a policy scoped to the services the
 stacks actually create (ec2, ecs, ecr, elasticloadbalancing, rds (including
 RDS Proxy), elasticache, secretsmanager, s3, cloudfront, codedeploy,
 codepipeline, events, logs, application-autoscaling, iam create/pass role), and
